@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>SILAHAN (Sistem Informasi Lahan)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="css/leaflet.css">
+  <link rel="stylesheet" href="css/fontawesome-all.min.css">
+  <link rel="stylesheet" href="css/leaflet-measure.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-control-search@2.9.8/dist/leaflet-search.min.css">
+  <style>
+    html, body, #map { height: 100%; margin: 0; font-family: "Segoe UI", sans-serif; }
+    h1 {
+      margin: 0;
+      padding: 10px;
+      font-size: 22px;
+      background: #2c3e50;
+      color: white;
+      text-align: center;
+    }
+    #container { display: flex; height: calc(100% - 50px); }
+    #sidebar {
+      width: 320px;
+      background: #f8f9fa;
+      box-shadow: 2px 0 6px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      z-index: 999;
+    }
+    .tab-header {
+      display: flex;
+      border-bottom: 1px solid #ccc;
+    }
+    .tab-header button {
+      flex: 1;
+      padding: 10px;
+      background: #e9ecef;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .tab-header button.active {
+      background: #dee2e6;
+      border-bottom: 2px solid #007bff;
+      color: #007bff;
+    }
+    .tab-content { flex: 1; overflow-y: auto; padding: 10px; display: none; }
+    .tab-content.active { display: block; }
+    .search-panel select, .search-panel input, .search-panel button {
+      width: 100%;
+      margin-bottom: 8px;
+      padding: 6px;
+      font-size: 14px;
+    }
+    #legend .legend {
+      margin-top: 10px;
+    }
+    .legend i {
+      float: left;
+      margin-right: 8px;
+      opacity: 0.9;
+    }
+    .legend .polygon {
+      width: 18px; height: 18px;
+    }
+    .legend .line {
+      width: 18px; height: 3px; margin-top: 7px;
+    }
+    .legend .point {
+      width: 12px; height: 12px; border-radius: 50%; margin-top: 3px;
+    }
+    #map { flex: 1; }
+    .toggle-sidebar {
+      position: absolute;
+      top: 60px;
+      left: 10px;
+      z-index: 1001;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 4px 6px;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+  </style>
+</head>
+<body>
+<h1>SILAHAN (Sistem Informasi Lahan)</h1>
+<div id="container">
+  <div id="sidebar">
+    <div class="tab-header">
+      <button class="active" onclick="showTab(0)">🔍 Cari</button>
+      <button onclick="showTab(1)">📌 Lokasi</button>
+      <button onclick="showTab(2)">🗂️ Legenda</button>
+    </div>
+    <div class="tab-content active">
+      <div class="search-panel">
+        <select id="layerSelect"><option value="">--Pilih Layer--</option></select>
+        <select id="fieldSelect"><option value="">--Pilih Kolom--</option></select>
+        <input type="text" id="searchInput" placeholder="Isi kata kunci...">
+        <button onclick="runSearch()">Cari</button>
+        <button onclick="resetSearch()">Reset</button>
+      </div>
+    </div>
+    <div class="tab-content">
+      <div class="search-panel">
+        <input type="text" id="locationInput" placeholder="Cari lokasi (misal: Sambi)">
+        <button onclick="searchLocation()">Cari Lokasi</button>
+      </div>
+    </div>
+    <div class="tab-content">
+      <div id="legend"></div>
+    </div>
+  </div>
+  <div id="map"></div>
+</div>
+<div class="toggle-sidebar" onclick="toggleSidebar()">☰</div>
+
+<!-- Scripts -->
+<script src="js/leaflet.js"></script>
+<script src="js/leaflet-measure.js"></script>
+<script src="js/Autolinker.min.js"></script>
+<script src="js/leaflet-hash.js"></script>
+<script src="https://unpkg.com/leaflet-control-search@2.9.8/dist/leaflet-search.min.js"></script>
+
+<!-- GeoJSON Layer Data -->
+<script src="data/RencanaPolaRuang_1.js"></script>
+<script src="data/BidangTanahSambi_2.js"></script>
+<script src="data/JaringanJalan_3.js"></script>
+<script src="data/Perairan_4.js"></script>
+<script src="data/AdministrasiDesa_5.js"></script>
+<script src="data/Toponimi_6.js"></script>
+
+<script>
+function showTab(index) {
+  document.querySelectorAll('.tab-content').forEach((el, i) => {
+    el.classList.toggle('active', i === index);
+  });
+  document.querySelectorAll('.tab-header button').forEach((btn, i) => {
+    btn.classList.toggle('active', i === index);
+  });
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  sidebar.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
+}
+
+const map = L.map('map').fitBounds([[-7.49122,110.68101],[-7.47397,110.70870]]);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+new L.Hash(map);
+new L.Control.Measure({ position: 'topleft' }).addTo(map);
+
+const layers = {};
+const searchableLayers = {};
+let locationMarker = null;
+
+function createGeoJsonLayer(data, options) {
+  return L.geoJson(data, {
+    style: options.style,
+    pointToLayer: options.pointToLayer,
+    onEachFeature: (feature, layer) => {
+      layer.bindPopup(Object.entries(feature.properties).map(([k,v]) => `<b>${k}</b>: ${v}`).join('<br>'));
+    }
+  });
+}
+
+function addToSelectOptions(layerName, fields) {
+  const layerSelect = document.getElementById('layerSelect');
+  const opt = document.createElement('option');
+  opt.value = layerName;
+  opt.textContent = layerName;
+  layerSelect.appendChild(opt);
+  searchableLayers[layerName] = fields;
+}
+
+document.getElementById('layerSelect').addEventListener('change', function() {
+  const fieldSelect = document.getElementById('fieldSelect');
+  fieldSelect.innerHTML = '<option value="">--Pilih Kolom--</option>';
+  const fields = searchableLayers[this.value] || [];
+  fields.forEach(field => {
+    const opt = document.createElement('option');
+    opt.value = field;
+    opt.textContent = field;
+    fieldSelect.appendChild(opt);
+  });
+});
+
+function runSearch() {
+  const layerName = document.getElementById('layerSelect').value;
+  const fieldName = document.getElementById('fieldSelect').value;
+  const keyword = document.getElementById('searchInput').value.toLowerCase();
+  if (!layerName || !fieldName || !keyword) return;
+
+  let count = 0;
+  layers[layerName].eachLayer(layer => {
+    const value = (layer.feature.properties[fieldName] || '').toString().toLowerCase();
+    if (value.includes(keyword)) {
+      count++;
+      if (layer.setStyle) layer.setStyle({ weight: 3, color: 'red' });
+      if (layer.getBounds) map.fitBounds(layer.getBounds());
+      layer.openPopup();
+    } else {
+      if (layer.setStyle) layer.setStyle({ weight: 1, color: '#666' });
+    }
+  });
+  alert(count ? `Ditemukan ${count} hasil.` : 'Data tidak ditemukan.');
+}
+
+function resetSearch() {
+  document.getElementById('layerSelect').value = "";
+  document.getElementById('fieldSelect').innerHTML = '<option value="">--Pilih Kolom--</option>';
+  document.getElementById('searchInput').value = "";
+  Object.values(layers).forEach(layer => {
+    if (layer.resetStyle) layer.resetStyle();
+  });
+  if (locationMarker) {
+    map.removeLayer(locationMarker);
+    locationMarker = null;
+  }
+}
+
+function searchLocation() {
+  const query = document.getElementById('locationInput').value.trim();
+  if (!query) return;
+  fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`)
+    .then(res => res.json())
+    .then(data => {
+      if (data.length > 0) {
+        const place = data[0];
+        const lat = parseFloat(place.lat), lon = parseFloat(place.lon);
+        if (locationMarker) map.removeLayer(locationMarker);
+        locationMarker = L.marker([lat, lon]).addTo(map).bindPopup(place.display_name).openPopup();
+        map.setView([lat, lon], 15);
+      } else {
+        alert('Lokasi tidak ditemukan.');
+      }
+    });
+}
+
+function createLegendBlock(title, colorMap, type) {
+  const legendDiv = document.createElement('div');
+  legendDiv.className = 'legend';
+  const header = document.createElement('b');
+  header.textContent = title;
+  legendDiv.appendChild(header);
+  for (const key in colorMap) {
+    const color = colorMap[key];
+    const className = type === 'line' ? 'line' : type === 'point' ? 'point' : 'polygon';
+    const item = document.createElement('div');
+    item.innerHTML = `<i class="${className}" style="background:${color}"></i> ${key}`;
+    legendDiv.appendChild(item);
+  }
+  document.getElementById('legend').appendChild(legendDiv);
+}
+
+// Layers
+const rencanaColors = { 'Badan Air': '#3dbfee','Badan Jalan': '#ec020a','Pemakaman': '#45ed23','Perdagangan dan Jasa Skala SWP': '#da9290','Perkebunan': '#71cb8e','Perlindungan Setempat': '#27d6bf','Perumahan Kepadatan Tinggi': '#e8ab12','Ruang Terbuka Non Hijau': '#1b5801','Sarana Pelayanan Umum Skala Kecamatan': '#c513d9','Sarana Pelayanan Umum Skala Kelurahan': '#cf52bc','Tanaman Pangan': '#bbe770' };
+const tanahColors = { 'Hak Guna Bangunan': '#bf4dd6','Hak Milik': '#7ed242','Hak Wakaf': '#25e1a2','HIBAH': '#d38944','JUAL BELI': '#4e73e4','Kosong': '#eb3541','Tanah Kas': '#f0139b','TANAH WAKAF': '#e3e856','WAKAF': '#e3e856','WARISAN': '#36b8dc' };
+const jalanColors = { 'Jalan Kolektor Primer': '#c98612','Jalan Lokal Primer': '#8d6ee4','Jalan Lingkungan': '#737e77' };
+const perairanColors = { 'Irigasi': '#3820ed', 'Sungai': '#74dad3' };
+const toponimiColors = { 'Fasilitas Umum dan Sosial': '#d36e52','Industri': '#5f94d4','Jaringan Air': '#e9dd82','Jaringan Telekomunikasi': '#a4d37f','Pariwisata dan Hiburan': '#86de99','Perkantoran dan Perdagangan Jasa': '#d5176c','Pertahanan dan Keamanan': '#6f52d8','RTH dan Sejenis': '#c51adc' };
+
+const rencana = createGeoJsonLayer(json_RencanaPolaRuang_1, { style: f => ({ color: '#000', weight: 1, fillColor: rencanaColors[f.properties.SubZona] || '#ccc', fillOpacity: 1 }) }).addTo(map);
+layers['Rencana Pola Ruang'] = rencana;
+addToSelectOptions('Rencana Pola Ruang', ['SubZona','Zona']);
+createLegendBlock('Rencana Pola Ruang', rencanaColors, 'polygon');
+
+const tanah = createGeoJsonLayer(json_BidangTanahSambi_2, { style: f => ({ color: '#000', weight: 1, fillColor: tanahColors[f.properties.STATUS] || '#999', fillOpacity: 1 }) }).addTo(map);
+layers['Bidang Tanah'] = tanah;
+addToSelectOptions('Bidang Tanah', ['STATUS','NAMA_KTP']);
+createLegendBlock('Bidang Tanah', tanahColors, 'polygon');
+
+const adm = createGeoJsonLayer(json_AdministrasiDesa_5, { style: () => ({ color: '#da0436', weight: 1, fillOpacity: 0 }) }).addTo(map);
+layers['Administrasi Desa'] = adm;
+addToSelectOptions('Administrasi Desa', ['NAMOBJ']);
+
+const perairan = createGeoJsonLayer(json_Perairan_4, { style: f => ({ color: perairanColors[f.properties.Keterangan] || '#00f', weight: 1 }) }).addTo(map);
+layers['Perairan'] = perairan;
+addToSelectOptions('Perairan', ['Keterangan']);
+createLegendBlock('Perairan', perairanColors, 'line');
+
+const jalan = createGeoJsonLayer(json_JaringanJalan_3, { style: f => ({ color: jalanColors[f.properties.Fungsi] || '#888', weight: 1 }) }).addTo(map);
+layers['Jaringan Jalan'] = jalan;
+addToSelectOptions('Jaringan Jalan', ['Fungsi','Jalan']);
+createLegendBlock('Jaringan Jalan', jalanColors, 'line');
+
+const toponimi = createGeoJsonLayer(json_Toponimi_6, {
+  pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+    radius: 4, color: '#000', weight: 1,
+    fillColor: toponimiColors[f.properties.Jns_Utama] || '#aaa', fillOpacity: 1
+  })
+}).addTo(map);
+layers['Toponimi'] = toponimi;
+addToSelectOptions('Toponimi', ['Jns_Utama','Nama_Objek']);
+createLegendBlock('Toponimi', toponimiColors, 'point');
+
+L.control.layers(null, layers).addTo(map);
+</script>
+</body>
+</html>
